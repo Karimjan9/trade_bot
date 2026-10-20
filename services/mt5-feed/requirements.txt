@@ -1,0 +1,4 @@
+MetaTrader5>=5.0,<6
+requests>=2.32.4,<3
+keyring>=25,<26
+python-dotenv>=1.1,<2

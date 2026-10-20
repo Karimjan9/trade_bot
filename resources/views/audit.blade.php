@@ -1,0 +1,4 @@
+@extends('layout')
+@section('title', 'Audit tarixi')
+@section('description', 'Kim, qachon va nimani o‘zgartirgan — oldingi va yangi qiymatlar bilan.')
+@section('content')<section class="card"><div class="table-wrap"><table><thead><tr><th>Vaqt (UZT)</th><th>Amal</th><th>Obyekt</th><th>Foydalanuvchi</th><th>Tafsilot</th></tr></thead><tbody>@forelse($logs as $log)<tr><td>{{ $log->created_at->timezone('Asia/Tashkent')->format('d.m.Y H:i:s') }}</td><td>{{ $log->action }}</td><td>{{ $log->subject ?? '—' }}</td><td>{{ $log->user_id ?? 'SYSTEM' }}</td><td><details><summary>Ko‘rish</summary><pre>{{ json_encode(['before' => $log->before, 'after' => $log->after], JSON_PRETTY_PRINT|JSON_UNESCAPED_UNICODE) }}</pre></details></td></tr>@empty<tr><td colspan="5" class="empty-cell">Audit hodisalari yo‘q.</td></tr>@endforelse</tbody></table></div>{{ $logs->links() }}</section>@endsection
