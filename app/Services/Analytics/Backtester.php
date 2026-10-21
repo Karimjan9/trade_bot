@@ -13,10 +13,15 @@ class Backtester
     {
         $signals = $channel->signals()->whereIn('status', ['ready', 'historical'])->orderBy('signal_time')->orderBy('id')->get();
         $outcomes = [];
-        $skipped = ['no_entry' => 0, 'unclosed' => 0];
+        $skipped = ['no_entry' => 0, 'unclosed' => 0, 'needs_policy' => 0];
         $split1 = (int) floor($signals->count() * 0.6);
         $split2 = (int) floor($signals->count() * 0.8);
         foreach ($signals as $index => $signal) {
+            if ($signal->stop_loss === null || ! $signal->take_profits) {
+                $skipped['needs_policy']++;
+
+                continue;
+            }
             $ticks = MarketSnapshot::where('symbol', $signal->symbol)->where('recorded_at', '>=', $signal->signal_time)->orderBy('recorded_at')->orderBy('id')->cursor();
             $spec = config('trading.symbols.'.$signal->symbol);
             $entry = $stop = $risk = null;

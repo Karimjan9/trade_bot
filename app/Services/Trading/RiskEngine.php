@@ -9,10 +9,12 @@ use App\Models\Signal;
 
 class RiskEngine
 {
-    public function evaluate(Signal $signal, MarketSnapshot $quote, RiskProfile $rules, float $riskMultiplier = 1): array
+    public function evaluate(Signal $signal, MarketSnapshot $quote, RiskProfile $rules, float $riskMultiplier = 1, array $management = []): array
     {
+        $channelReasons = app(ChannelRisk::class)->reasons($signal->channel, $rules);
+        $rules = app(ChannelRisk::class)->limits($signal->channel, $rules);
         $account = app(Portfolio::class)->summary();
-        $reasons = [];
+        $reasons = $channelReasons;
         $entry = $signal->direction === 'BUY' ? $quote->ask : $quote->bid;
         $spec = config('trading.symbols.'.$signal->symbol);
         $entry += ($signal->direction === 'BUY' ? 1 : -1) * ($spec['slippage'] ?? 0);
@@ -23,6 +25,12 @@ class RiskEngine
         }
         if (! $signal->channel->enabled) {
             $reasons[] = 'CHANNEL_DISABLED';
+        }
+        if ($signal->channel->trade_state === 'EXCLUDED') {
+            $reasons[] = 'CHANNEL_UNPROFITABLE_MONITOR_ONLY';
+        }
+        if ($signal->channel->trade_state === 'MONITOR_ONLY') {
+            $reasons[] = 'CHANNEL_RESEARCH_MONITOR_ONLY';
         }
         if ($signal->status !== 'ready') {
             $reasons[] = 'SIGNAL_NOT_READY';
@@ -76,17 +84,30 @@ class RiskEngine
         if (PaperTrade::where('signal_id', $signal->id)->where('mode', 'paper')->exists()) {
             $reasons[] = 'DUPLICATE_TRADE';
         }
-        $budget = max(0, $account['equity']) * $rules->max_trade_risk_pct / 100 * min(1, max(0, $riskMultiplier));
+        $budget = max(0, $account['equity']) * $rules->max_trade_risk_pct / 100 * min(1, max(0, $riskMultiplier)) * min(1, max(0, $management['risk_multiplier'] ?? 1));
         $perLotLoss = $distance * ($spec['value_per_unit'] ?? 0) + config('trading.commission_per_lot_round_trip');
         $step = $spec['volume_step'] ?? 0.01;
         $volume = $perLotLoss > 0 ? floor(($budget / $perLotLoss + 1e-10) / $step) * $step : 0;
         $volume = round(min($volume, $spec['volume_max'] ?? 0), 8);
         $amount = $volume * $perLotLoss;
-        if ($volume < ($spec['volume_min'] ?? 0.01)) {
+        $legs = null;
+        if (isset($management['entry_config'])) {
+            $allocation = app(EntryPlans::class)->allocate($management['entry_config'], $signal->direction, $signal->direction === 'BUY' ? $quote->ask : $quote->bid, $budget, $spec, config('trading.commission_per_lot_round_trip'));
+            $legs = $allocation['legs'];
+            $amount = $allocation['risk_amount'];
+            $fill = $signal->direction === 'BUY' ? $quote->ask : $quote->bid;
+            $volume = collect($legs)->filter(fn ($leg) => app(EntryPlans::class)->eligible($management['entry_config'], $leg['limit'], $signal->direction, $fill))->sum('volume');
+            if ($allocation['reason']) {
+                $reasons[] = $allocation['reason'];
+            } elseif ($volume <= 0) {
+                $reasons[] = 'WAIT_ENTRY_LEVEL';
+            }
+        }
+        if ($volume < ($spec['volume_min'] ?? 0.01) && $legs === null) {
             $reasons[] = 'BELOW_MINIMUM_VOLUME';
         }
         foreach (['max_channel_risk_pct' => $open->where('channel_id', $signal->channel_id), 'max_symbol_risk_pct' => $open->where('symbol', $signal->symbol), 'max_portfolio_risk_pct' => $open] as $limit => $exposures) {
-            if ($exposures->sum(fn ($t) => $t->risk_amount * $t->remaining_fraction) + $amount > max(0, $account['equity']) * $rules->$limit / 100 + 1e-8) {
+            if ($exposures->sum(fn ($t) => $t->exposureRisk()) + $amount > max(0, $account['equity']) * $rules->$limit / 100 + 1e-8) {
                 $reasons[] = strtoupper($limit);
             }
         }
@@ -94,6 +115,6 @@ class RiskEngine
             $reasons[] = 'NEWS_SHOCK';
         }
 
-        return ['approved' => $reasons === [], 'reasons' => $reasons, 'entry' => $entry, 'volume' => $volume, 'risk_amount' => $amount, 'reward_risk' => $rr, 'equity' => $account['equity']];
+        return ['approved' => $reasons === [], 'reasons' => $reasons, 'entry' => $entry, 'volume' => $volume, 'risk_amount' => $amount, 'reward_risk' => $rr, 'equity' => $account['equity'], 'budget' => $budget, 'entry_legs' => $legs, 'channel_limits' => $signal->channel->risk_settings];
     }
 }

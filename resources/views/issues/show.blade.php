@@ -1,0 +1,20 @@
+@extends('layout')
+@section('title', 'Jurnal #'.$issue->id)
+@section('description', $issue->title)
+@section('actions')<a class="button secondary" href="{{ route('issues') }}">← Jurnal</a>@endsection
+@section('content')
+<div class="two-column"><div>
+<section class="card"><div class="card-heading"><h2>{{ \App\Models\MonitoringIssue::KINDS[$issue->kind] }}</h2><span class="badge {{ in_array($issue->status, \App\Models\MonitoringIssue::CLOSED) ? 'green' : '' }}">{{ \App\Models\MonitoringIssue::STATUSES[$issue->status] }}</span></div>
+<p class="journal-text">{{ $issue->description }}</p>@if($issue->question)<h3>Birga aniqlashtiramiz</h3><p class="journal-text">{{ $issue->question }}</p>@endif
+<div class="signal-levels"><div>KANAL<strong>@if($issue->channel)<a href="{{ route('channels.show', $issue->channel) }}">{{ $issue->channel->title }}</a>@else Platforma @endif</strong></div><div>SIGNAL<strong>@if($issue->signal)<a href="{{ route('signals.show', $issue->signal) }}">#{{ $issue->signal->id }}</a>@else — @endif</strong></div><div>HOLATLAR<strong>{{ $issue->occurrence_count }}</strong></div></div>
+<p class="help">{{ $issue->code }} · {{ $issue->automatic ? 'Avtomatik' : 'Qo‘lda kiritilgan' }}<br>Birinchi: {{ $issue->first_seen_at->timezone('Asia/Tashkent')->format('d.m.Y H:i:s') }} UZT<br>Oxirgi: {{ $issue->last_seen_at->timezone('Asia/Tashkent')->format('d.m.Y H:i:s') }} UZT</p>
+@if($issue->resolution)<h3>Yechim / qaror</h3><p class="journal-text">{{ $issue->resolution }}</p>@endif
+@if($issue->message)<details><summary>Birinchi holatning original xabari · Telegram #{{ $issue->message->telegram_message_id }}</summary><pre class="raw-message">{{ $issue->message->raw_text }}</pre></details>@endif
+<details><summary>Birinchi dalil</summary><pre>{{ json_encode($issue->first_evidence, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) }}</pre></details><details><summary>Oxirgi dalil</summary><pre>{{ json_encode($issue->last_evidence, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) }}</pre></details>
+</section>
+<section class="card"><div class="card-heading"><h2>Muhokama va o‘zgarish tarixi</h2></div><form method="post" action="{{ route('issues.comment', $issue) }}">@csrf<label>Izoh, tekshiruv yoki keyingi qadam<textarea name="body" required maxlength="4000" rows="3">{{ old('body') }}</textarea></label><button class="button secondary">Izoh qo‘shish</button></form>
+@foreach($events as $event)<div class="timeline-item"><small>{{ $event->created_at->timezone('Asia/Tashkent')->format('d.m.Y H:i:s') }} UZT · {{ $event->user?->name ?? 'Tizim' }}</small><strong>{{ ['OCCURRENCE' => 'Holat qayd qilindi', 'REOPENED' => 'Yangi holat: qayta ochildi', 'COMMENT' => 'Izoh', 'STATUS_CHANGED' => 'Holat o‘zgardi'][$event->action] ?? $event->action }}</strong>@if($event->body)<div class="journal-text">{{ $event->body }}</div>@endif
+@if($event->evidence)<details><summary>Dalil va kontekst</summary><pre>{{ json_encode($event->evidence, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) }}</pre></details>@if(!empty($event->evidence['signal_id']))<a href="{{ route('signals.show', $event->evidence['signal_id']) }}">Signal #{{ $event->evidence['signal_id'] }}</a>@endif @endif</div>@endforeach
+{{ $events->links() }}</section></div>
+<section class="card"><div class="card-heading"><h2>Qarorni qayd qilish</h2></div><form method="post" action="{{ route('issues.status', $issue) }}">@csrf<input type="hidden" name="version" value="{{ $issue->status_version }}"><label>Holat<select name="status">@foreach(\App\Models\MonitoringIssue::STATUSES as $key => $label)<option value="{{ $key }}" @selected($issue->status === $key)>{{ $label }}</option>@endforeach</select></label><label>Yechim yoki sabab<textarea name="note" rows="5" maxlength="4000">{{ old('note') }}</textarea></label><button class="button">Qarorni saqlash</button></form><p class="help">“Hal qilindi” yoki “Muammo emas” holati uchun izoh kerak. Oldingi yozuvlar saqlanadi. Savdo qoidasi yoki kod o‘zgarishi alohida bajariladi.</p></section></div>
+@endsection

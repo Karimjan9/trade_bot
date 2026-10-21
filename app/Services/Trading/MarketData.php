@@ -29,13 +29,7 @@ class MarketData
                     app(ChannelAnalytics::class)->refresh($channel);
                 }
                 // Retry only transient waits, within the original signal's validity window.
-                $waiting = Signal::where('symbol', $quote->symbol)->where('status', 'ready')->where('signal_time', '>=', now()->subSeconds(config('trading.signal_max_age_seconds')))->whereDoesntHave('trades', fn ($q) => $q->where('mode', 'paper'))->orderBy('id')->limit(100)->get();
-                foreach ($waiting as $signal) {
-                    $lastDecision = $signal->decisions()->first();
-                    if ($lastDecision && ($lastDecision->action === 'WAIT' || in_array('NO_MARKET_DATA', $lastDecision->reasons))) {
-                        app(DecisionEngine::class)->evaluate($signal);
-                    }
-                }
+                app(DecisionEngine::class)->evaluateSymbol($quote->symbol);
             }
 
             return $quote;

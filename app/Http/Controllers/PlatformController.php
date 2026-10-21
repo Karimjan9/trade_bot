@@ -2,17 +2,27 @@
 
 namespace App\Http\Controllers;
 
+use App\Jobs\LearnChannelModel;
 use App\Models\Agent;
 use App\Models\AgentDecision;
 use App\Models\AuditLog;
 use App\Models\Backtest;
+use App\Models\ChannelMlModel;
+use App\Models\ChannelStrategy;
+use App\Models\EntryExperiment;
 use App\Models\MarketSnapshot;
+use App\Models\MlObservation;
+use App\Models\MlPrediction;
 use App\Models\PaperTrade;
 use App\Models\RiskProfile;
 use App\Models\ServiceHeartbeat;
 use App\Models\Signal;
 use App\Models\TelegramChannel;
 use App\Services\Analytics\Backtester;
+use App\Services\Analytics\ChannelEvidence;
+use App\Services\Analytics\ChannelPolicyLearner;
+use App\Services\Analytics\ChannelTrajectorySummary;
+use App\Services\Analytics\ClaimVerifier;
 use App\Services\Signals\ChannelRegistry;
 use App\Services\Signals\EventIngestor;
 use App\Services\Trading\DecisionEngine;
@@ -46,7 +56,26 @@ class PlatformController extends Controller
 
     public function channel(TelegramChannel $channel)
     {
-        return view('channel', ['channel' => $channel->load('profile', 'agents'), 'messages' => $channel->messages()->latest()->paginate(15), 'signals' => $channel->signals()->latest()->limit(10)->get(), 'backtests' => Backtest::where('channel_id', $channel->id)->latest()->limit(5)->get()]);
+        $strategyReports = ChannelStrategy::where('channel_id', $channel->id)->latest('id')->get()->unique(fn ($s) => $s->symbol.':'.$s->direction);
+        $trajectorySummary = app(ChannelTrajectorySummary::class)->inspect($channel);
+        $models = ChannelMlModel::where('channel_id', $channel->id)->latest('id')->limit(5)->get();
+        $active = ChannelMlModel::where('channel_id', $channel->id)->where('state', 'ACTIVE_PAPER')->where('expires_at', '>=', now())->latest('id')->first();
+        if ($active && ! $models->contains('id', $active->id)) {
+            $models->prepend($active);
+        }
+
+        return view('channel', ['channel' => $channel->load('profile', 'agents'), 'strategyReports' => $strategyReports, 'trajectorySummary' => $trajectorySummary, 'mlModels' => $models, 'mlActive' => $active, 'mlCounts' => MlObservation::where('channel_id', $channel->id)->selectRaw('state, COUNT(*) as total')->groupBy('state')->pluck('total', 'state'), 'mlPredictions' => MlPrediction::join('ml_observations as o', 'o.id', '=', 'ml_predictions.observation_id')->where('o.channel_id', $channel->id)->orderByDesc('ml_predictions.id')->limit(8)->select('ml_predictions.*', 'o.signal_id')->get(), 'evidence' => app(ChannelEvidence::class)->inspect($channel), 'messages' => $channel->messages()->latest()->paginate(15), 'signals' => $channel->signals()->latest()->limit(10)->get(), 'backtests' => Backtest::where('channel_id', $channel->id)->latest()->limit(5)->get()]);
+    }
+
+    public function learnChannel(Request $request, TelegramChannel $channel)
+    {
+        $data = $request->validate(['learning_eligible' => 'required|boolean']);
+        $before = $channel->learning_eligible;
+        $channel->update(['learning_eligible' => $data['learning_eligible']]);
+        AuditLog::record('channel.learning_eligible', 'channel:'.$channel->id, ['enabled' => $before], ['enabled' => $channel->learning_eligible]);
+        LearnChannelModel::dispatch($channel->id);
+
+        return back()->with('success', 'ML tahlili navbatga qo‘shildi. Yetarli dalil bo‘lsa yangi model versiyasi tekshiriladi.');
     }
 
     public function toggleChannel(TelegramChannel $channel)
@@ -61,6 +90,20 @@ class PlatformController extends Controller
         return back()->with('success', 'Kanal kuzatuvi yangilandi.');
     }
 
+    public function researchChannel(Request $request, TelegramChannel $channel, ChannelPolicyLearner $learner, ClaimVerifier $verifier)
+    {
+        $data = $request->validate(['symbol' => ['required', Rule::in(array_keys(config('trading.symbols')))], 'direction' => ['required', Rule::in(['BUY', 'SELL'])], 'pip_size' => 'required|numeric|gt:0|lte:100', 'horizon_seconds' => 'required|integer|min:60|max:86400']);
+        $settings = $channel->research_settings ?? [];
+        $before = $settings;
+        $settings[$data['symbol']] = ['pip_size' => (float) $data['pip_size'], 'horizon_seconds' => (int) $data['horizon_seconds']];
+        $channel->update(['research_settings' => $settings]);
+        AuditLog::record('channel.research_settings', 'channel:'.$channel->id, $before, $settings);
+        $policy = $learner->fit($channel, $data['symbol'], $data['direction']);
+        $verifier->channel($channel);
+
+        return back()->with('success', 'Kanal siyosati #'.$policy->id.' · '.$policy->status.'. SL/TP mavjud tarixdan hisoblandi; natija da’volari qayta tekshirildi.');
+    }
+
     public function signals(Request $request)
     {
         $query = Signal::with('channel')->latest();
@@ -73,7 +116,28 @@ class PlatformController extends Controller
 
     public function signal(Signal $signal)
     {
-        return view('signal', ['signal' => $signal->load('channel', 'message', 'events', 'decisions', 'trades')]);
+        $observation = MlObservation::where('signal_id', $signal->id)->first();
+
+        return view('signal', ['signal' => $signal->load('channel', 'message', 'events', 'decisions', 'trades'), 'observation' => $observation, 'entryExperiment' => $observation ? EntryExperiment::where('observation_id', $observation->id)->latest('id')->first() : null]);
+    }
+
+    public function channelRisk(Request $request, TelegramChannel $channel)
+    {
+        $global = RiskProfile::current();
+        $keys = ['max_trade_risk_pct', 'max_channel_risk_pct', 'max_daily_loss_pct', 'max_weekly_loss_pct', 'max_drawdown_pct'];
+        $validation = [];
+        foreach ($keys as $key) {
+            $validation[$key] = 'nullable|numeric|min:0.01|max:'.$global->$key;
+        }
+        $data = $request->validate($validation);
+        DB::transaction(function () use ($channel, $data) {
+            RiskProfile::current(true);
+            $before = $channel->risk_settings;
+            $channel->update(['risk_settings' => array_map(fn ($value) => (float) $value, array_filter($data, fn ($value) => $value !== null))]);
+            AuditLog::record('channel.risk_updated', 'channel:'.$channel->id, $before, $channel->risk_settings);
+        });
+
+        return back()->with('success', 'Kanal risk chegaralari saqlandi. Markaziy limitlar ham amal qiladi.');
     }
 
     public function reevaluate(Signal $signal, DecisionEngine $engine)

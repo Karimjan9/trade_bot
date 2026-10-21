@@ -14,6 +14,7 @@ use App\Models\TradeEvent;
 use App\Models\User;
 use App\Services\Analytics\Backtester;
 use App\Services\Analytics\ChannelAnalytics;
+use App\Services\Analytics\ChannelEvidence;
 use App\Services\Signals\ChannelRegistry;
 use App\Services\Signals\EventIngestor;
 use App\Services\Signals\MessageProcessor;
@@ -37,6 +38,7 @@ class SignalIntelligenceTest extends TestCase
     {
         parent::setUp();
         $this->travelTo(now()->startOfSecond());
+        config(['trading.arbitration.collection_seconds' => 0]);
         config(['trading.gateway_token' => str_repeat('g', 64), 'trading.market_token' => str_repeat('m', 64)]);
     }
 
@@ -75,7 +77,7 @@ class SignalIntelligenceTest extends TestCase
 
     public static function ambiguousSignals(): array
     {
-        return [['GOLD BUY NOW SL 3370 TP 3385'], ['GOLD BUY 3375 TP 3385'], ['GOLD BUY 3375 SL 3380 TP 3390'], ['GOLD BUY 3375 SL 3370 TP 3360'], ['GOLD BUY SELL 3375 SL 3370 TP 3385'], ['GOLD EURUSD BUY 3375 SL 3370 TP 3385'], ['GOLD BUY 3375 SL 3370 TP 3385 risk 10%'], ['GOLD BUY STOP 3375 SL 3370 TP 3385']];
+        return [['GOLD BUY NOW SL 3370 TP 3385'], ['GOLD BUY 3375 SL 3380 TP 3390'], ['GOLD BUY 3375 SL 3370 TP 3360'], ['GOLD BUY SELL 3375 SL 3370 TP 3385'], ['GOLD EURUSD BUY 3375 SL 3370 TP 3385'], ['GOLD BUY 3375 SL 3370 TP 3385 risk 10%'], ['GOLD BUY STOP 3375 SL 3370 TP 3385']];
     }
 
     #[DataProvider('ambiguousSignals')]
@@ -89,6 +91,111 @@ class SignalIntelligenceTest extends TestCase
         $result = app(SignalParser::class)->parse('Close 30% and move SL to BE.');
         $this->assertSame(['PARTIAL_CLOSE', 'BREAK_EVEN'], array_column($result['actions'], 'type'));
         $this->assertSame(0.3, $result['actions'][0]['fraction']);
+    }
+
+    public static function incompleteSignals(): array
+    {
+        return [
+            ['GOLD BUY 3375-3378', ['stop_loss', 'take_profits']],
+            ['GOLD BUY 3375-3378 SL 3370', ['take_profits']],
+            ['GOLD BUY 3375-3378 TP1 3385', ['stop_loss']],
+        ];
+    }
+
+    #[DataProvider('incompleteSignals')]
+    public function test_incomplete_signal_preserves_evidence_without_inventing_prices_or_opening_trade(string $text, array $missing): void
+    {
+        $channel = $this->channel();
+        $this->quote();
+        $this->ingest($channel, ['text' => $text]);
+        $parsed = app(SignalParser::class)->parse($text);
+        $this->assertSame('PARTIAL_SIGNAL', $parsed['type']);
+        $this->assertSame($missing, $parsed['missing_fields']);
+        $this->assertEquals(3375, $parsed['candidate']['entry_min']);
+        if (in_array('stop_loss', $missing)) {
+            $this->assertNull($parsed['candidate']['stop_loss']);
+        }
+        if (in_array('take_profits', $missing)) {
+            $this->assertSame([], $parsed['candidate']['take_profits']);
+        }
+        $this->assertDatabaseCount('signals', 1);
+        $this->assertSame('needs_policy', Signal::first()->status);
+        $this->assertDatabaseCount('paper_trades', 0);
+        $this->assertSame(1, app(ChannelEvidence::class)->inspect($channel)['counts']['incomplete_signals']);
+        $this->assertSame($text, TelegramMessage::first()->raw_text);
+    }
+
+    public function test_late_pips_claim_is_linked_but_does_not_count_as_profit_or_close_trade(): void
+    {
+        $channel = $this->channel();
+        $this->quote();
+        $signal = $this->ingest($channel);
+        $this->ingest($channel, ['message_id' => 2, 'text' => 'TP1 HIT +150 pips!', 'reply_to_message_id' => 1]);
+        $claim = $signal->events()->where('type', 'RESULT_CLAIM')->firstOrFail();
+        $this->assertSame('UNVERIFIED', $claim->payload['verification']);
+        $this->assertEquals(150, $claim->payload['claims'][0]['value']);
+        $this->assertSame(0, PaperTrade::where('status', 'closed')->count());
+        $this->assertSame(0, $channel->profile()->first()->metrics['sample_size']);
+        $evidence = app(ChannelEvidence::class)->inspect($channel);
+        $this->assertSame(1, $evidence['counts']['result_reports']);
+        $this->assertEquals(150, $evidence['reports'][0]['claims'][0]['value']);
+        $this->actingAs(User::factory()->create())->get('/channels/'.$channel->id)->assertOk()->assertSee('TARIXDA BO‘SHLIQ');
+    }
+
+    public function test_bare_pips_claim_without_a_signal_remains_unlinked_and_unverified(): void
+    {
+        $channel = $this->channel();
+        $this->ingest($channel, ['text' => 'Ana 150 pips']);
+        $message = TelegramMessage::first();
+        $this->assertSame('RESULT_REPORT', $message->message_type);
+        $this->assertSame('unlinked_report', $message->processing_status);
+        $this->assertDatabaseCount('signals', 0);
+        $this->assertDatabaseCount('paper_trades', 0);
+    }
+
+    public function test_save_without_fraction_does_not_guess_a_partial_close(): void
+    {
+        $channel = $this->channel();
+        $this->quote();
+        $this->ingest($channel);
+        $this->quote(['bid' => 3379, 'ask' => 3379.3]);
+        $this->ingest($channel, ['message_id' => 2, 'text' => 'Save now', 'reply_to_message_id' => 1]);
+        $this->assertEquals(1, PaperTrade::first()->remaining_fraction);
+        $this->assertEquals(3370, PaperTrade::first()->stop_loss);
+        $this->assertSame(1, app(ChannelEvidence::class)->inspect($channel)['counts']['save_needs_policy']);
+    }
+
+    public function test_explicit_save_rejects_a_losing_position_then_closes_given_fraction_in_profit(): void
+    {
+        $channel = $this->channel();
+        $this->quote();
+        $this->ingest($channel);
+        $this->ingest($channel, ['message_id' => 2, 'text' => 'Save 25%', 'reply_to_message_id' => 1]);
+        $this->assertEquals(1, PaperTrade::first()->remaining_fraction);
+        $this->assertDatabaseHas('trade_events', ['type' => 'UPDATE_REJECTED']);
+        $this->quote(['bid' => 3379, 'ask' => 3379.3]);
+        $this->ingest($channel, ['message_id' => 3, 'text' => 'Save 25%', 'reply_to_message_id' => 1]);
+        $trade = PaperTrade::where('mode', 'paper')->first();
+        $this->assertEquals(0.75, $trade->remaining_fraction);
+        $this->assertEquals($trade->entry_price, $trade->stop_loss);
+    }
+
+    public function test_channel_evidence_counts_deleted_signal_once_and_separates_general_message_deletions(): void
+    {
+        $channel = $this->channel();
+        $this->ingest($channel, ['is_historical' => true]);
+        $this->ingest($channel, ['is_historical' => true]);
+        $this->ingest($channel, ['kind' => 'edit', 'text' => str_replace('3370', '3369', self::TEXT)]);
+        $this->ingest($channel, ['kind' => 'delete', 'text' => '']);
+        $this->ingest($channel, ['message_id' => 2, 'text' => 'Salom']);
+        $this->ingest($channel, ['message_id' => 2, 'kind' => 'delete', 'text' => '']);
+        $evidence = app(ChannelEvidence::class)->inspect($channel);
+        $this->assertSame(2, $evidence['counts']['observed_messages']);
+        $this->assertSame(1, $evidence['counts']['complete_signals']);
+        $this->assertSame(1, $evidence['counts']['edited_signal_messages']);
+        $this->assertSame(1, $evidence['counts']['deleted_signal_messages']);
+        $this->assertCount(3, $evidence['revisions']);
+        $this->assertSame(self::TEXT, TelegramMessage::first()->raw_text);
     }
 
     public function test_gateway_rejects_wrong_scope_and_disabled_channels(): void

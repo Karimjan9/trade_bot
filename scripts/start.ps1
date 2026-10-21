@@ -17,6 +17,7 @@ $artisanPath = Join-Path $projectPath 'artisan'
 $definitions = @(
     @{ name = 'server'; arguments = @($artisanPath, 'serve', '--host=127.0.0.1', "--port=$Port", '--no-reload') },
     @{ name = 'queue'; arguments = @($artisanPath, 'queue:work', '--tries=5', '--timeout=120', '--sleep=1') },
+    @{ name = 'ml'; arguments = @($artisanPath, 'queue:work', '--queue=ml', '--tries=1', '--timeout=180', '--sleep=2') },
     @{ name = 'scheduler'; arguments = @($artisanPath, 'schedule:work') }
 )
 $started = @()
@@ -32,4 +33,4 @@ try {
     throw
 }
 Write-Output "Signal Forge: http://127.0.0.1:$Port"
-Write-Output 'Server, queue worker and scheduler started in the background. Stop: ./scripts/stop.ps1'
+Write-Output 'Server, signal queue, ML queue and scheduler started in the background. Stop: ./scripts/stop.ps1'

@@ -12,7 +12,7 @@ class TelegramChannel extends Model
 
     protected function casts(): array
     {
-        return ['enabled' => 'boolean', 'learning_eligible' => 'boolean', 'last_seen_at' => 'datetime'];
+        return ['enabled' => 'boolean', 'learning_eligible' => 'boolean', 'last_seen_at' => 'datetime', 'research_settings' => 'array', 'risk_settings' => 'array'];
     }
 
     public function messages(): HasMany

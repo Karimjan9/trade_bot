@@ -4,7 +4,19 @@ Telegram signal manbalarini tahlil qilish, kanal agentlarini paper/shadow muhiti
 
 Bu dastlabki ishlaydigan versiya. Telegram xabari → arxiv → structured signal → tushuntirilgan agent qarori → risk tekshiruvi → paper/shadow pozitsiya → natija → kanal statistikasi oqimi amalga oshirilgan. To‘liq konsepsiya: [docs/requirements.uz.txt](docs/requirements.uz.txt).
 
+Grafik ichidagi signal, SL/TP yetishmasligi, save/BE, tahrir/o‘chirish va kanalning foyda da’volari bo‘yicha aniqlashtirilgan talablar: [Kanal dalillari va strategiya tadqiqoti](docs/channel-evidence.uz.md). Matnli incomplete signallar ham yaratiladi; agent yetishmagan SL va target darajalarini kanal tarixidan o‘rganilgan siyosat bilan to‘ldiradi. Provider originali o‘zgarmaydi. `150 pips` claim kuzatilgan maksimum bilan solishtiriladi, masalan 130 pips / 20 pips farq; bu raqamlar realized foydaga qo‘shilmaydi. `Save 25%`, `Bez ubitka 50 pips` va `Bez ubitka TP1` qo‘llab-quvvatlanadi.
+
+GOLD uchun foydalanuvchi tasdiqlagan birlik: **1 pip = 0.1, 100 pips = 10.0**. Kanal sahifasidagi “Tarixdan hisoblash” yoki `php artisan platform:research-channels CHANNEL_ID` statistik SL/target/profit-lock siyosatini hisoblaydi. O‘rganish/validation davrlari ajratilgan, ustma-ust oynalar chiqariladi. Har soatda avtomatik qayta tahlil qilinadi; standart minimum 20 train va 10 validation kuzatuv. Yetarli tarix bo‘lmasa `INSUFFICIENT_DATA`, yomon holdout bo‘lsa `REJECTED`.
+
+Har kanal uchun haqiqiy supervised ML ham ulangan: logistika modeli foydali yakun ehtimolini, Ridge modeli xarajatlardan keyingi net R ni o‘rganadi. 60/20/20 xronologik train/calibration/test, ustma-ust davrlarni chiqarish, rad etilgan signallarni ham kuzatish, yangi natijalardan qayta o‘qitish va drift kuzatuvi mavjud. `ACTIVE_PAPER` model salbiy baholagan signalni boshida filtrlashi mumkin; yetarli dalil bo‘lmasa `ABSTAIN`/`SHADOW_ONLY`. Kanal sabablarini trend/range/breakout bilan kuzatilgan bog‘liqlik sifatida ko‘rsatadi. Batafsil: [Kanal ML oqimi](docs/channel-ml.uz.md). Vision hali qo‘shilmagan.
+
+Target 100 va profit-lock qadami 50 pips misolida: +50 da SL entry, +100 da SL +50, +150 da SL +100. Kanal TP bermagan trade uchun target yurish bosqichi hisoblanadi; u avtomatik yopilish emas. Pozitsiya ko‘tariladigan SL yoki o‘rganish oynasiga mos vaqt bo‘yicha exit bilan boshqariladi. Raw signal SL/TP’si va agent hisoblagan darajalar alohida saqlanadi.
+
 ## Lokal ishga tushirish
+
+Signal sahifasida **“Qaysi kirish usuli foydali bo‘lardi?”** taqqoslash qo‘shilgan. Yangi kuzatuvlar uchun 34 ta oldindan belgilangan kirish/SL/chiqish kombinatsiyasi, zona kutish, 3 qismga bo‘lish va 60/90 pips SL variantlari tekshiriladi. Qamrovi to‘liq, kirishsiz holatlar ham 0 R bilan hisobga kiradi. Faqat avvalgi train/validation/test’dan o‘tgan usul kelgusi paper signallarda ishlatiladi. Har kanal sahifasida jami signal riski, kanal ochiq riski, kun/hafta zarar va pasayish chegaralari alohida sozlanadi. Batafsil: [Kirish va risk](docs/channel-ml.uz.md#kirish-zonasi-qismlar-va-kanal-riski).
+
+Paneldagi **Savollar va xatolar** (`/issues`) monitoring jurnalidir: noaniq signal/save, bog‘lanmagan update/natija, claim tafovuti yoki ma’lumot qamrovi, o‘qilmagan rasm, ML drift, zararli kanal sinovi va texnik xatolar dalillari bilan qayd qilinadi. Izoh, mas’ala holati va yechim tarixi saqlanadi; qo‘lda ham savol qo‘shish mumkin. Takroriy qayta ishlash yangi holat yaratmaydi; yechilgan masala yangi hodisada qayta ochiladi. Queue/scheduler ishlashi kerak; `php artisan platform:collect-issues` durable xatolarni qo‘lda yig‘adi. Batafsil ish tartibi: [Monitoring jurnali](docs/channel-ml.uz.md#monitoring-savollari-va-xatolar-jurnali).
 
 Talablar: PHP 8.2+, Composer, PDO SQLite; gateway uchun Python 3.11+ va operatsion tizim keyring xizmati. Hozirgi muhitda Laravel 12 va SQLite tayyorlangan. Admin panel oddiy Blade/CSS bilan ishlaydi, Node build shart emas.
 
@@ -13,10 +25,12 @@ composer install
 # Yangi checkoutda .env.example ni .env ga nusxalang va:
 php artisan key:generate
 php artisan platform:install
+python -m venv services/ml/.venv
+./services/ml/.venv/Scripts/python.exe -m pip install -r services/ml/requirements.lock.txt
 ./scripts/start.ps1
 ```
 
-Manzil: **http://127.0.0.1:8020**. Server, database queue worker va scheduler fon rejimida ishga tushadi. Loglar: `storage/logs/{server,queue,scheduler}.{out,err}.log`. Boshqa port uchun `./scripts/start.ps1 -Port 8021` ishlating va `.env` hamda servislar `PLATFORM_URL` qiymatini moslang.
+Manzil: **http://127.0.0.1:8020**. Server, signal va ML uchun alohida queue workerlar hamda scheduler fon rejimida ishga tushadi. Loglar: `storage/logs/{server,queue,ml,scheduler}.{out,err}.log`. Boshqa port uchun `./scripts/start.ps1 -Port 8021` ishlating va `.env` hamda servislar `PLATFORM_URL` qiymatini moslang.
 
 Administrator email/paroli `storage/app/private/initial-admin.txt` faylida. Umumiy standart parol yo‘q: install tasodifiy parol yaratadi, mavjud hisobni o‘zgartirmaydi. Parolni almashtirish:
 
@@ -24,11 +38,12 @@ Administrator email/paroli `storage/app/private/initial-admin.txt` faylida. Umum
 php artisan platform:password admin@local.test
 ```
 
-To‘xtatish: `./scripts/stop.ps1`. Qo‘lda, uchta alohida terminalda ishga tushirish ham mumkin:
+To‘xtatish: `./scripts/stop.ps1`. Qo‘lda, to‘rtta alohida terminalda ishga tushirish ham mumkin:
 
 ```powershell
 php artisan serve --host=127.0.0.1 --port=8020
 php artisan queue:work --tries=5 --timeout=120
+php artisan queue:work --queue=ml --tries=1 --timeout=180
 php artisan schedule:work
 ```
 
@@ -72,12 +87,21 @@ TP2 3392
 | Yetkazish | Lokal SQLite outbox, Laravel durable inbox, UUID idempotency, queue retry, pending event recovery |
 | Arxiv | Birinchi kuzatilgan raw text/JSON o‘zgarmaydi; barcha revision/eventlar alohida saqlanadi |
 | Parser | GOLD/XAUUSD, EURUSD, GBPUSD; BUY/SELL, price/range, SL, bir nechta TP; aniq bo‘lmagan matn review talab qiladi |
-| Signal update | Explicit reply, partial close, close all, break even, riskni kamaytiruvchi SL, TP, cancel |
+| Signal update | Explicit reply, partial close, close all, break even, TP/pips darajasiga profit-lock, riskni kamaytiruvchi SL, TP, cancel |
 | Qaror | Parser confidence, R/R, yetarli bo‘lsa kanal statistikasi va regime natijasi, latency; sabab/context saqlanadi |
 | Paper execution | Bid/ask, konfiguratsiyadagi slippage, round-trip komissiya, lot step/min/max, SL/TP, stop gap, partial close, MFE/MAE |
 | Shadow | Bir xil qabul qilingan signal uchun oxirgi TP chiqish varianti; alohida hisob, paper equityga qo‘shilmaydi |
 | Risk | Trade/channel/symbol/portfolio risk, daily/weekly loss, drawdown/high-water equity, pozitsiya soni, spread/R, minimum R/R, TTL, takroriy symbol exposure, emergency stop |
-| Analytics | Net R expectancy, win rate, profit factor, drawdown R, direction/session/regime guruhlari, kuzatilgan edit/delete nisbati |
+| Analytics | Net R expectancy, win rate, profit factor, drawdown R, direction/session/regime guruhlari, edit/delete, pips claim / observed / farq va qamrov versiyalari |
+| Kanal siyosati | Tarixdan SL/target/profit-lock; xronologik validation; originalni saqlab missing darajalarni paper’da ishlatish |
+| ML | Kanalga xos logistika + Ridge, ehtimol kalibratsiyasi, mustaqil keyingi sinov, sabablar, signal filtri, har 5 daqiqada yangi natijalarni tekshirish |
+| Umumiy tanlov | Bir instrument uchun 3 sekund yig‘ish oynasi, BUY/SELL nomzodlarini net R/qarshi yurish/vaqt bilan taqqoslash, ustunlik bo‘lmasa WAIT, bitta paper pozitsiya |
+| Narx yo‘li | Trade yopilgandan keyin ham 60 min kuzatuv; +50/+100/+150 va ungacha qarshi yurish, SL oldin urilganligi; kanal va signal sahifalarida ko‘rsatiladi |
+| Individual usul | Har kanal/instrument/yo‘nalish uchun 34 kirish/SL/chiqish kombinatsiyasi, 60/20/20 mustaqil sinov; eski kuzatuvlar uchun avvalgi 7 exit hisoboti saqlanadi |
+| Bo‘lib kirish | Bitta paper pozitsiyada 3 oldindan hajmi belgilangan qism, umumiy SL va band qilingan risk; har qo‘shishda risk qayta tekshiriladi |
+| Kanal riski | Markaziy limitdan oshmaydigan trade/kanal/kun/hafta/drawdown chegaralari, train pasayishidan riskni kamaytirish |
+| Kanal saralash | Foyda isbotlanmagan usul monitoringda qoladi; yetarli davrda sinalgan barcha usullar zararli bo‘lsa yangi savdolar bloklanadi, xabar kuzatuvi davom etadi |
+| Video | Video/round-video yuklab olinmaydi va tahlil qilinmaydi; yozma caption bo‘lsa faqat matn parse qilinadi, bo‘sh video SKIPPED_VIDEO |
 | Drift | Kamida 60 yopilgan paper trade: oxirgi 30 oldingi 30 bilan solishtiriladi; drift riskni kamaytiradi, severe championni quarantine qiladi |
 | Backtest | Mustaqil bid/ask tick replay, first/last TP, xarajatlar, MFE/MAE, xronologik 60/20/20 hisoboti; CSV import |
 | MT5 | Alohida read-only narx feed; order execution hali mavjud emas |
@@ -200,7 +224,7 @@ REDIS_CLIENT=predis
 REDIS_HOST=127.0.0.1
 ```
 
-So‘ng `php artisan config:clear` va workerlarni qayta ishga tushiring. Predis Composer orqali o‘rnatilgan. SQLite uchun bitta queue worker ishlating; ko‘p worker va katta tarix uchun PostgreSQL/MySQL hamda Redisga o‘ting. Risk tekshiruvi va pozitsiya ochish bitta tranzaksiya hamda singleton risk-profile row lock ostida bajariladi. Database unique constraintlar duplicate signal/tradeni ham bloklaydi. MySQL/PostgreSQL parallel stress sinovi hali bajarilmagan.
+So‘ng `php artisan config:clear` va workerlarni qayta ishga tushiring. Predis Composer orqali o‘rnatilgan. SQLite’da signal uchun bitta worker va alohida ML worker mavjud; katta tarix va ko‘p parallel worker uchun PostgreSQL/MySQL hamda Redisga o‘ting. `retry_after=240` ML job timeout’idan (180 s) katta bo‘lishi kerak. Risk tekshiruvi va pozitsiya ochish bitta tranzaksiya hamda singleton risk-profile row lock ostida bajariladi. Database unique constraintlar duplicate signal/tradeni ham bloklaydi. MySQL/PostgreSQL parallel stress sinovi hali bajarilmagan.
 
 ## Keyingi bosqichlar
 
@@ -211,13 +235,14 @@ So‘ng `php artisan config:clear` va workerlarni qayta ishga tushiring. Predis 
 5. Signal-source clustering, weighted consensus, USD/correlated exposure, capital allocation va meta-agent.
 6. MT5 demo execution: broker contract/margin/order_check, idempotent order lifecycle, broker deals/positions reconciliation va recovery; demo acceptance’dan keyingina micro-live.
 
-Hozirgi versiyada broker orderlari, live mode, avtomatik ML training yoki live promotion yo‘q. `learning_eligible=false` boshlang‘ich qiymat; Telegram transport arxivi keyingi AI datasetidan ajratilishi uchun saqlangan. Kelgusi ML qatlamiga faqat foydalanish huquqi qayd etilgan provider ma’lumoti kiritilishi kerak.
+Hozirgi versiyada broker orderlari va live mode yo‘q. Avtomatik ML training va faqat paper uchun shartli model faollashuvi mavjud. Telegram kanalda `learning_eligible=false` boshlang‘ich qiymat; kanal sahifasida o‘qitishni yoqish mumkin. Manual laboratoriya manbasi paper sinov uchun ishlatiladi. Rasm/chart extraction, original media arxivi va real demo execution alohida qolgan ishlar.
 
 ## Tekshirish
 
 ```powershell
 php artisan test --compact
 php vendor/bin/pint --test
+./services/ml/.venv/Scripts/python.exe -m unittest discover -s services/ml -v
 composer audit
 cd services/telegram-gateway
 ./.venv/Scripts/python.exe -m unittest -v test_gateway.py

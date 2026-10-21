@@ -28,17 +28,36 @@ def main():
         page.wait_for_url(BASE + '/')
         assert page.get_by_role('heading', name='Umumiy ko‘rinish').count() == 1
         page.screenshot(path=str(OUTPUT / 'dashboard.png'), full_page=True)
-        for path in ['/channels', '/signals', '/trades', '/agents', '/backtests', '/risk', '/lab', '/integrations', '/audit']:
+        for path in ['/channels', '/signals', '/trades', '/agents', '/backtests', '/risk', '/lab', '/integrations', '/audit', '/issues']:
             response = page.goto(BASE + path)
             assert response.status == 200, (path, response.status)
             assert page.locator('h1').count() == 1, path
+        page.goto(BASE + '/channels')
+        if page.locator('a.channel-name').count():
+            response = page.goto(page.locator('a.channel-name').first.get_attribute('href'))
+            assert response.status == 200
+            assert page.locator('form[action$="/research"]').count() == 1
+            assert page.locator('form[action$="/learn"]').count() == 1
+            assert page.get_by_role('heading', name='Kanalning ML modeli').count() == 1
+            assert page.get_by_role('heading', name='Kanalga individual yondashuv').count() == 1
+            assert page.get_by_role('heading', name='Kanal uchun risk boshqaruvi').count() == 1
+            assert page.locator('form[action$="/risk"]').count() == 1
+            assert page.get_by_text('Ochilmaydi · yuklab olinmaydi', exact=True).count() == 1
+            page.screenshot(path=str(OUTPUT / 'channel-policy.png'), full_page=True)
+            page.set_viewport_size({'width': 390, 'height': 844})
+            assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth'), 'Channel mobile page overflows'
         page.set_viewport_size({'width': 390, 'height': 844})
+        page.goto(BASE + '/issues')
+        assert page.get_by_role('heading', name='Monitoring jurnali').count() == 1
+        assert page.locator('form[action$="/issues"]').count() == 1
+        assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth'), 'Journal mobile page overflows'
+        page.screenshot(path=str(OUTPUT / 'journal-mobile.png'), full_page=True)
         page.goto(BASE + '/')
         page.screenshot(path=str(OUTPUT / 'mobile.png'), full_page=True)
         assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth'), 'Mobile page overflows'
         assert not errors, errors
         browser.close()
-    print('Browser smoke passed: login, 10 authenticated pages, desktop and mobile. Screenshots: storage/app/private/qa/')
+    print('Browser smoke passed: login, authenticated pages including journal, desktop and mobile. Screenshots: storage/app/private/qa/')
 
 
 if __name__ == '__main__':

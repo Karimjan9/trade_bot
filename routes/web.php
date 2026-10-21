@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\MonitoringIssueController;
 use App\Http\Controllers\PlatformController;
 use Illuminate\Support\Facades\Route;
 
@@ -15,6 +16,9 @@ Route::middleware('auth')->group(function () {
     Route::post('/channels', [PlatformController::class, 'addChannel'])->name('channels.store');
     Route::get('/channels/{channel}', [PlatformController::class, 'channel'])->name('channels.show');
     Route::post('/channels/{channel}/toggle', [PlatformController::class, 'toggleChannel'])->name('channels.toggle');
+    Route::post('/channels/{channel}/research', [PlatformController::class, 'researchChannel'])->name('channels.research');
+    Route::post('/channels/{channel}/learn', [PlatformController::class, 'learnChannel'])->name('channels.learn');
+    Route::post('/channels/{channel}/risk', [PlatformController::class, 'channelRisk'])->name('channels.risk');
     Route::get('/signals', [PlatformController::class, 'signals'])->name('signals');
     Route::get('/signals/{signal}', [PlatformController::class, 'signal'])->name('signals.show');
     Route::post('/signals/{signal}/evaluate', [PlatformController::class, 'reevaluate'])->name('signals.evaluate');
@@ -30,5 +34,10 @@ Route::middleware('auth')->group(function () {
     Route::post('/backtests', [PlatformController::class, 'runBacktest'])->name('backtests.run');
     Route::post('/backtests/import', [PlatformController::class, 'importTicks'])->name('backtests.import');
     Route::get('/audit', [PlatformController::class, 'audit'])->name('audit');
+    Route::get('/issues', [MonitoringIssueController::class, 'index'])->name('issues');
+    Route::post('/issues', [MonitoringIssueController::class, 'store'])->name('issues.store');
+    Route::get('/issues/{issue}', [MonitoringIssueController::class, 'show'])->name('issues.show');
+    Route::post('/issues/{issue}/comments', [MonitoringIssueController::class, 'comment'])->name('issues.comment');
+    Route::post('/issues/{issue}/status', [MonitoringIssueController::class, 'status'])->name('issues.status');
     Route::get('/integrations', [PlatformController::class, 'integrations'])->name('integrations');
 });

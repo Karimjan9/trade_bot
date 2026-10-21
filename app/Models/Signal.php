@@ -10,7 +10,7 @@ class Signal extends Model
 
     protected function casts(): array
     {
-        return ['take_profits' => 'array', 'signal_time' => 'datetime'];
+        return ['take_profits' => 'array', 'entry_plan' => 'array', 'signal_time' => 'datetime'];
     }
 
     public function channel()

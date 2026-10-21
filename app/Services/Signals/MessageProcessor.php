@@ -8,6 +8,8 @@ use App\Models\SignalEvent;
 use App\Models\TelegramMessage;
 use App\Models\TelegramMessageEvent;
 use App\Services\Analytics\ChannelAnalytics;
+use App\Services\Analytics\ClaimVerifier;
+use App\Services\Monitoring\SignalIssues;
 use App\Services\Trading\DecisionEngine;
 use App\Services\Trading\PaperExecution;
 use Carbon\CarbonImmutable;
@@ -42,8 +44,10 @@ class MessageProcessor
                     $this->signalEvent($signal, $event, 'MESSAGE_DELETED', []);
                 }
             } else {
-                $parsed = app(SignalParser::class)->parse($payload['text'] ?? '');
+                $parsed = app(MediaPolicy::class)->parse($payload['text'] ?? '', $payload['raw_json'] ?? []);
                 DB::table('signal_parses')->insert(['message_id' => $message->id, 'source_event_id' => $event->id, 'parser_version' => SignalParser::VERSION, 'result' => json_encode($parsed, JSON_THROW_ON_ERROR), 'created_at' => now(), 'updated_at' => now()]);
+                app(SignalIssues::class)->parsed($message, $event, $parsed);
+                app(SignalIssues::class)->image($message, $event);
                 if ($event->kind === 'edit') {
                     // Preserve initial signal and raw text; edits never silently replace entry/SL.
                     if (! $message->edited_at || $event->occurred_at->gte($message->edited_at)) {
@@ -55,10 +59,10 @@ class MessageProcessor
                     }
                 } elseif (! $message->deleted_at && ! $message->edited_at) {
                     $message->update(['message_type' => $parsed['type'], 'processing_status' => $parsed['type'] === 'REVIEW_REQUIRED' ? 'review' : 'processed']);
-                    if ($parsed['type'] === 'NEW_SIGNAL' && ! $signal) {
-                        $data = $parsed['signal'];
-                        $signal = Signal::create($data + ['channel_id' => $channel->id, 'message_id' => $message->id, 'confidence' => $parsed['confidence'], 'signal_time' => $message->posted_at, 'fingerprint' => hash('sha256', json_encode($data, JSON_THROW_ON_ERROR)), 'status' => $message->is_historical ? 'historical' : 'ready']);
-                        $this->signalEvent($signal, $event, 'NEW_SIGNAL', $data);
+                    if (in_array($parsed['type'], ['NEW_SIGNAL', 'PARTIAL_SIGNAL']) && ! $signal) {
+                        $data = $parsed['signal'] ?? $parsed['candidate'];
+                        $signal = Signal::create($data + ['channel_id' => $channel->id, 'message_id' => $message->id, 'confidence' => $parsed['confidence'], 'signal_time' => $message->posted_at, 'fingerprint' => hash('sha256', json_encode($data, JSON_THROW_ON_ERROR)), 'status' => $message->is_historical ? 'historical' : ($parsed['type'] === 'PARTIAL_SIGNAL' ? 'needs_policy' : 'ready')]);
+                        $this->signalEvent($signal, $event, $parsed['type'], $data);
                         app(DecisionEngine::class)->evaluate($signal);
                     } elseif ($parsed['type'] === 'SIGNAL_UPDATE') {
                         // Explicit reply linkage only; ambiguous updates never affect another trade.
@@ -75,6 +79,16 @@ class MessageProcessor
                             }
                         } else {
                             $message->update(['processing_status' => 'unlinked_update']);
+                            app(SignalIssues::class)->unlinked($message, $event, false);
+                        }
+                    } elseif ($parsed['type'] === 'RESULT_REPORT') {
+                        $parent = $message->reply_to_message_id ? TelegramMessage::where('channel_id', $channel->id)->where('telegram_message_id', $message->reply_to_message_id)->first()?->signal : null;
+                        if ($parent) {
+                            $claimEvent = $this->signalEvent($parent, $event, 'RESULT_CLAIM', ['text' => $payload['text'] ?? '', 'claims' => $parsed['claims'], 'verification' => 'UNVERIFIED']);
+                            app(ClaimVerifier::class)->verify($claimEvent);
+                        } else {
+                            $message->update(['processing_status' => 'unlinked_report']);
+                            app(SignalIssues::class)->unlinked($message, $event, true);
                         }
                     }
                 }
@@ -85,8 +99,8 @@ class MessageProcessor
         }, 3);
     }
 
-    private function signalEvent(Signal $signal, TelegramMessageEvent $event, string $type, array $payload): void
+    private function signalEvent(Signal $signal, TelegramMessageEvent $event, string $type, array $payload): SignalEvent
     {
-        SignalEvent::create(['signal_id' => $signal->id, 'source_event_id' => $event->id, 'type' => $type, 'payload' => $payload, 'occurred_at' => $event->occurred_at]);
+        return SignalEvent::create(['signal_id' => $signal->id, 'source_event_id' => $event->id, 'type' => $type, 'payload' => $payload, 'occurred_at' => $event->occurred_at]);
     }
 }

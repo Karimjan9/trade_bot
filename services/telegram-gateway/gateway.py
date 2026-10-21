@@ -93,6 +93,15 @@ def iso(value):
     return value.astimezone(timezone.utc).isoformat()
 
 
+def media_policy(message):
+    document = getattr(message, 'document', None)
+    mime = getattr(document, 'mime_type', '') or ''
+    video = bool(getattr(message, 'video', None) or getattr(message, 'video_note', None) or mime.startswith('video/'))
+    return {'kind': 'video' if video else ('photo' if getattr(message, 'photo', None) else 'other'),
+            'video_content_skipped': video, 'caption_only': video and bool((message.message or '').strip()),
+            'downloaded': False}
+
+
 class Gateway:
     def __init__(self, client):
         self.client = client
@@ -108,7 +117,9 @@ class Gateway:
         text = message.message or ''
         # History and realtime deliveries can race; each keeps a durable provenance.
         identity = json.dumps([LABEL, channel['id'], message.id, kind, occurred, text, historical], ensure_ascii=False)
-        payload = {'event_id': str(uuid.uuid5(uuid.NAMESPACE_URL, identity)), 'channel_id': channel['id'], 'telegram_id': str(utils.get_peer_id(message.peer_id)), 'message_id': message.id, 'kind': kind, 'text': text, 'raw_json': json.loads(message.to_json()), 'reply_to_message_id': message.reply_to_msg_id, 'posted_at': posted, 'occurred_at': occurred, 'is_historical': historical}
+        raw = json.loads(message.to_json())
+        raw['_signal_forge_media'] = media_policy(message)
+        payload = {'event_id': str(uuid.uuid5(uuid.NAMESPACE_URL, identity)), 'channel_id': channel['id'], 'telegram_id': str(utils.get_peer_id(message.peer_id)), 'message_id': message.id, 'kind': kind, 'text': text, 'raw_json': raw, 'reply_to_message_id': message.reply_to_msg_id, 'posted_at': posted, 'occurred_at': occurred, 'is_historical': historical}
         self.outbox.put(payload)
 
     async def sync_registry(self):
